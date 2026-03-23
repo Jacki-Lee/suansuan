@@ -1,0 +1,269 @@
+# 设计文档
+
+## 1. 技术架构
+
+### 1.1 技术选型
+- 前端技术栈: 微信公众号菜单 + H5 页面（Vue 3 + Vite + TypeScript）
+- 后端技术栈: Node.js（NestJS）
+- 数据存储: MySQL（核心业务数据）+ Redis（会话与缓存）
+- 部署环境: Linux + Docker + Nginx + 腾讯云基础设施（数据库、对象存储、监控）
+
+### 1.2 系统架构
+- 架构图 (PlantUML)
+
+```plantuml
+@startuml
+actor 用户
+actor 运营人员
+actor 客服
+actor 管理员
+
+rectangle 微信生态 {
+  [微信公众号]
+  [微信消息网关]
+}
+
+rectangle 业务系统 {
+  [API网关]
+  [用户与画像服务]
+  [紫微排盘服务]
+  [解读生成服务]
+  [内容管理服务]
+  [咨询工单服务]
+  [后台管理服务]
+  [审计与合规服务]
+}
+
+database MySQL
+collections Redis
+cloud 对象存储
+component 监控告警平台
+
+用户 --> [微信公众号]
+[微信公众号] --> [微信消息网关]
+[微信消息网关] --> [API网关]
+
+[API网关] --> [用户与画像服务]
+[API网关] --> [紫微排盘服务]
+[API网关] --> [解读生成服务]
+[API网关] --> [内容管理服务]
+[API网关] --> [咨询工单服务]
+
+运营人员 --> [后台管理服务]
+客服 --> [后台管理服务]
+管理员 --> [后台管理服务]
+[后台管理服务] --> [内容管理服务]
+[后台管理服务] --> [咨询工单服务]
+[后台管理服务] --> [审计与合规服务]
+
+[用户与画像服务] --> MySQL
+[紫微排盘服务] --> MySQL
+[解读生成服务] --> MySQL
+[内容管理服务] --> MySQL
+[咨询工单服务] --> MySQL
+[审计与合规服务] --> MySQL
+
+[API网关] --> Redis
+[解读生成服务] --> Redis
+[内容管理服务] --> 对象存储
+
+[API网关] --> 监控告警平台
+[后台管理服务] --> 监控告警平台
+@enduml
+```
+
+- 核心模块描述
+  - 微信接入层：处理关注、菜单点击、关键词消息、模板消息回调。
+  - 用户与画像服务：管理用户身份绑定、基础档案、画像标签。
+  - 紫微排盘服务：完成命盘计算、版本化管理与结果缓存。
+  - 解读生成服务：根据排盘结果生成结构化解读与建议。
+  - 内容管理服务：支持文章、专题、活动内容发布与订阅触达。
+  - 咨询工单服务：处理用户咨询、分配、回复、评分闭环。
+  - 后台管理服务：为运营、客服、管理员提供统一管理入口。
+  - 审计与合规服务：记录关键日志、处理授权撤回、数据脱敏查询。
+
+- 技术依赖关系
+  - 微信消息网关依赖 API 网关进行鉴权和路由。
+  - 排盘服务依赖用户画像服务提供标准化出生参数。
+  - 解读服务依赖排盘服务产出结果并调用模板引擎。
+  - 后台管理服务依赖内容、咨询、审计服务聚合数据。
+  - 监控告警平台依赖各服务暴露指标、日志和链路信息。
+
+## 2. 详细设计
+
+### 2.1 前端设计
+- UI 设计规范
+  - 风格：国风简洁，强调信息层级与易读性。
+  - 色彩：主色深紫 + 中性色，提示信息采用标准状态色。
+  - 字体与排版：正文 14-16px，关键结论加粗，避免大段密集文本。
+- 组件设计
+  - 用户信息录入组件（日期、时辰、性别、历法）。
+  - 命盘展示组件（宫位、星曜分区、阶段标签）。
+  - 解读卡片组件（总览、主题、建议、风险）。
+  - 咨询对话组件（工单状态、历史记录、评分）。
+- 状态管理
+  - 使用 Pinia 管理用户会话、命盘数据、订阅偏好、咨询状态。
+  - 关键状态写入本地缓存，减少重复请求。
+- 路由设计
+  - `/home`：服务首页
+  - `/profile`：用户资料与出生信息
+  - `/chart`：命盘结果页
+  - `/interpretation`：解读详情页
+  - `/consulting`：咨询工单页
+  - `/content`：内容广场与订阅页
+
+### 2.2 后端设计
+- API 接口设计 (RESTful 标准)
+  - `POST /api/v1/wechat/auth/bind`：微信身份绑定
+  - `GET /api/v1/users/me`：获取用户资料
+  - `PUT /api/v1/users/profile`：更新基础档案
+  - `POST /api/v1/charts/calculate`：发起命盘计算
+  - `GET /api/v1/charts/{chartId}`：获取命盘结果
+  - `GET /api/v1/reports/{chartId}`：获取解读报告
+  - `GET /api/v1/contents`：内容列表
+  - `POST /api/v1/consultations`：创建咨询工单
+  - `PATCH /api/v1/consultations/{id}/assign`：分配咨询工单
+  - `POST /api/v1/admin/contents/publish`：后台发布内容
+- 数据模型设计 (ER 图)
+
+```plantuml
+@startuml
+entity 用户表 {
+  *id : bigint
+  *openid : varchar
+  unionid : varchar
+  nickname : varchar
+  phone : varchar
+  status : tinyint
+  created_at : datetime
+}
+
+entity 用户画像表 {
+  *id : bigint
+  *user_id : bigint
+  birth_date : date
+  birth_time : varchar
+  gender : tinyint
+  calendar_type : varchar
+  profile_version : int
+  updated_at : datetime
+}
+
+entity 命盘表 {
+  *id : bigint
+  *user_id : bigint
+  *profile_id : bigint
+  algorithm_version : varchar
+  chart_payload : json
+  created_at : datetime
+}
+
+entity 解读报告表 {
+  *id : bigint
+  *chart_id : bigint
+  summary_text : text
+  topic_payload : json
+  risk_notice : text
+  created_at : datetime
+}
+
+entity 内容表 {
+  *id : bigint
+  title : varchar
+  category : varchar
+  status : tinyint
+  publish_time : datetime
+}
+
+entity 咨询工单表 {
+  *id : bigint
+  *user_id : bigint
+  subject : varchar
+  detail : text
+  status : tinyint
+  assignee_id : bigint
+  created_at : datetime
+}
+
+entity 审计日志表 {
+  *id : bigint
+  operator_id : bigint
+  action : varchar
+  target_type : varchar
+  target_id : bigint
+  created_at : datetime
+}
+
+用户表 ||--o{ 用户画像表
+用户表 ||--o{ 命盘表
+命盘表 ||--|| 解读报告表
+用户表 ||--o{ 咨询工单表
+@enduml
+```
+
+- 业务逻辑设计
+  - 用户完成身份绑定后进入资料校验流程，资料完整后开放排盘能力。
+  - 排盘服务按“参数标准化 -> 星曜计算 -> 结果校验 -> 入库与缓存”流程执行。
+  - 解读服务按“规则模板匹配 -> 主题生成 -> 风险文案注入”流程执行。
+  - 咨询服务按“建单 -> 分配 -> 回复 -> 评价 -> 归档”流程闭环。
+- 安全解决方案设计
+  - 用户敏感字段（手机号、出生信息）使用数据库加密或字段级加密。
+  - 所有管理接口启用 JWT + RBAC 权限控制。
+  - 微信回调接口进行签名校验和重放保护。
+  - 审计日志不可物理删除，仅允许归档。
+
+### 2.3 目录结构设计
+- 遵循最佳实践的组织良好且标准化的项目目录结构
+
+```text
+project-root/
+  apps/
+    wechat-h5/
+      src/
+        pages/
+        components/
+        stores/
+        services/
+    admin-console/
+      src/
+        pages/
+        components/
+        api/
+  services/
+    api-gateway/
+    user-service/
+    chart-service/
+    interpretation-service/
+    content-service/
+    consultation-service/
+    audit-service/
+  packages/
+    shared-types/
+    shared-utils/
+    chart-rules/
+  infra/
+    docker/
+    nginx/
+    scripts/
+  docs/
+    api/
+    compliance/
+```
+
+## 3. 质量保证
+- 测试策略
+  - 单元测试：命盘参数转换、规则匹配、权限校验。
+  - 集成测试：微信接入流程、排盘到解读全链路、咨询流转。
+  - 回归测试：关键接口、内容发布、后台角色权限。
+- 性能优化计划
+  - 热点命盘结果缓存到 Redis，减轻重复计算。
+  - 报告内容按需加载，避免一次性返回大体量数据。
+  - 数据库建立组合索引优化用户查询与工单检索。
+- 安全保护措施
+  - 最小权限原则管理后台账号。
+  - 生产环境启用 WAF、IP 白名单和访问频率限制。
+  - 定期执行漏洞扫描与依赖升级。
+- 监控和告警计划
+  - 监控指标：接口成功率、P95 响应时延、任务堆积量、数据库连接数。
+  - 告警分级：P1（核心服务不可用）、P2（性能显著下降）、P3（非核心异常）。
+  - 建立值班与故障复盘机制，形成周报与改进闭环。
